@@ -116,7 +116,8 @@ class SampleProcessor(object):
         # 1) compute discounted rewards (returns)
         for idx, path in enumerate(paths):
             path["returns"]                = utils.discount_cumsum(path["rewards"], self.discount)
-            path["discounted_rewards"]     = (path["returns"] - np.mean(path["returns"])) / (np.std(path["returns"]) +1e-7)
+            normalized_rewards_on          = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-8)
+            path["discounted_rewards"]     = utils.discount_cumsum(normalized_rewards_on, self.discount)
             #path["discounted_rewards"]    =  path["returns"]
 
             #normalized_rewards              = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-7)
@@ -247,7 +248,7 @@ class SampleProcessor(object):
             states_value,_                  = self.baseline_value.get_state_values(path['observations'], path['task_ids'])
             next_states_value,_             = self.baseline_value.get_state_values(path['next_observations'], path['task_ids'])
 
-            normalized_rewards              = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-7)
+            normalized_rewards              = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-8)
             states_value                    = states_value[0].squeeze(-1)
             next_states_value               = next_states_value[0].squeeze(-1)
 

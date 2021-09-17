@@ -199,7 +199,6 @@ if __name__=="__main__":
             'num_tasks'                           : 2,
 
             'buffer_length'                       : 4000, # meta_batch_size * rollout_per_task * max_path_length *constant
-
             'sample_batch_size'                   : 5,    # for each meta task
 
             'off_clip_eps_upper'                  : 0.8,

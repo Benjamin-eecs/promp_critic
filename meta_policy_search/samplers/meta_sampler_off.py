@@ -48,7 +48,7 @@ class ReplayBuffer(object):
             self.ac_buffs[i]      = np.zeros((self.buffer_length, ac_dim), dtype=np.float32)
             self.rew_buffs[i]     = np.zeros(self.buffer_length, dtype=np.float32)
             self.next_ob_buffs[i] = np.zeros((self.buffer_length, ob_dim), dtype=np.float32)            
-            self.done_buffs[i]    = np.zeros(self.buffer_length, dtype=np.uint8)
+            self.done_buffs[i]    = np.zeros(self.buffer_length, dtype=np.float32)
 
             self.return_buffs[i]  = np.zeros(self.buffer_length, dtype=np.float32)
 
@@ -296,12 +296,14 @@ class MetaSampler_off(Sampler):
 
                 # if running path is done, add it to paths and empty the running path
                 if done:
+
                     paths[idx // self.envs_per_task].append(dict(
-                        observations=np.asarray(running_paths[idx]["observations"]),
-                        actions=np.asarray(running_paths[idx]["actions"]),
-                        rewards=np.asarray(running_paths[idx]["rewards"]),
-                        env_infos=utils.stack_tensor_dict_list(running_paths[idx]["env_infos"]),
-                        agent_infos=utils.stack_tensor_dict_list(running_paths[idx]["agent_infos"]),
+                        observations     = np.asarray(running_paths[idx]["observations"]),
+                        actions          = np.asarray(running_paths[idx]["actions"]),
+                        rewards          = np.asarray(running_paths[idx]["rewards"]),
+                        task_ids         = np.expand_dims(np.eye(self.num_tasks)[tasks_id[idx // self.envs_per_task]], axis=0).repeat(self.max_path_length, axis=0),
+                        env_infos        = utils.stack_tensor_dict_list(running_paths[idx]["env_infos"]),
+                        agent_infos      = utils.stack_tensor_dict_list(running_paths[idx]["agent_infos"]),
                     ))
 
                     discount_reward = utils.discount_cumsum(np.asarray(running_paths[idx]["rewards"]), self.discount)

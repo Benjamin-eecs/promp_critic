@@ -40,9 +40,10 @@ class Trainer_off(object):
             policy,
             critic_1,
             critic_2,
+            baseline_value,
             n_itr,
             seeds,
-
+            tau,
             start_itr=0,
             num_inner_grad_steps=1,
             sample_batch_size=32,
@@ -56,6 +57,10 @@ class Trainer_off(object):
         self.policy               = policy
         self.critic_1             = critic_1
         self.critic_2             = critic_2
+        self.baseline_value       = baseline_value
+
+        self.tau                  = tau
+
         self.n_itr                = n_itr
         self.start_itr            = start_itr
         self.num_inner_grad_steps = num_inner_grad_steps
@@ -147,7 +152,7 @@ class Trainer_off(object):
                     if step < self.num_inner_grad_steps:
                         logger.log("Computing inner policy updates...")
                         
-                        self.algo._adapt_off_critic(samples_data_step_0, off_sample_data)
+                        self.algo._adapt_off_value(samples_data_step_0, off_sample_data)
 
                     list_inner_step_time.append(time.time() - time_inner_step_start)
 
@@ -182,11 +187,15 @@ class Trainer_off(object):
                 # This needs to take all samples_data so that it can construct graph for meta-optimization.
                 time_outer_step_start = time.time()
                 self.algo.optimize_policy(all_samples_data)
-                self.algo.optimize_critic()
+
+
+                '''
+                self.critic_1.optimize_critic(off_sample_data)
+                self.critic_2.optimize_critic(off_sample_data)
 
                 self.critic_1.update_target_critic_network(self.tau)
-                self.critic_1.update_target_critic_network(self.tau)
-
+                self.critic_2.update_target_critic_network(self.tau)
+                '''
 
 
                 """ ------------------- Logging Stuff --------------------------"""

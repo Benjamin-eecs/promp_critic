@@ -115,6 +115,29 @@ class GaussianMLPPolicy(Policy):
         assert actions.shape == (observations.shape[0], self.action_dim)
         return actions, dict(mean=means, log_std=logs_stds)
 
+    def get_actions_critic(self, observations):
+        """
+        Runs each set of observations through each task specific policy
+
+        Args:
+            observations (ndarray) : array of observations - shape: (batch_size, obs_dim)
+
+        Returns:
+            (ndarray) : array of sampled actions - shape: (batch_size, action_dim)
+        """
+        assert observations.ndim == 2 and observations.shape[1] == self.obs_dim
+
+        sess = tf.get_default_session()
+        actions, means, logs_stds = sess.run([self.action_var, self.mean_var, self.log_std_var],
+                                             feed_dict={self.obs_var: observations})
+        rnd = np.random.normal(size=means.shape)
+        actions = means + rnd * np.exp(logs_stds)
+
+        assert actions.shape == (observations.shape[0], self.action_dim)
+        return actions, dict(mean=means, log_std=logs_stds)
+
+
+
     def log_diagnostics(self, paths, prefix=''):
         """
         Log extra information per iteration based on the collected paths

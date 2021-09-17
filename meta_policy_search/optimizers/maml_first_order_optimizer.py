@@ -6,13 +6,13 @@ import tensorflow as tf
 class CriticOptimizer(Optimizer):
     def __init__(
             self,
-            tf_optimizer_cls     =   tf.train.AdamOptimizer,
-            tf_optimizer_args    =   None,
-            learning_rate        =   1e-3,
-            max_epochs           =   1,
-            tolerance            =   1e-6,
-            num_minibatches      =   1,
-            verbose              =   False
+            tf_optimizer_cls         =   tf.train.AdamOptimizer,
+            tf_optimizer_args        =   None,
+            learning_rate            =   1e-3,
+            max_epochs               =   1,
+            tolerance                =   1e-6,
+            num_minibatches          =   1,
+            verbose                  =   False
             ):
         self._target = None
         if tf_optimizer_args is None:
@@ -78,8 +78,8 @@ class CriticOptimizer(Optimizer):
 
         """
 
-        sess         = tf.get_default_session()
-        feed_dict    = self.create_feed_dict(input_val_dict)
+        sess            = tf.get_default_session()
+        feed_dict       = self.create_feed_dict(input_val_dict)
 
         # Overload self._batch size
         # dataset = MAMLBatchDataset(inputs, num_batches=self._batch_size, extra_inputs=extra_inputs, meta_batch_size=self.meta_batch_size, num_grad_updates=self.num_grad_updates)
@@ -102,7 +102,24 @@ class CriticOptimizer(Optimizer):
         return loss_before_opt
 
 
+    def compute_stats(self, input_val_dict):
+        """
+        Computes the value the loss, the outer KL and the inner KL-divergence between the current policy and the
+        provided dist_info_data
 
+        Args:
+           inputs (list): inputs needed to compute the inner KL
+           extra_inputs (list): additional inputs needed to compute the inner KL
+
+        Returns:
+           (float): value of the loss
+           (ndarray): inner kls - numpy array of shape (num_inner_grad_steps,)
+           (float): outer_kl
+        """
+        sess                      = tf.get_default_session()
+        feed_dict                 = self.create_feed_dict(input_val_dict)
+        loss                      = sess.run([self._loss], feed_dict=feed_dict)
+        return loss
 
 class MAMLFirstOrderOptimizer(Optimizer):
     """
@@ -193,7 +210,7 @@ class MAMLFirstOrderOptimizer(Optimizer):
 
         """
 
-        sess = tf.get_default_session()
+        sess      = tf.get_default_session()
         feed_dict = self.create_feed_dict(input_val_dict)
 
         # Overload self._batch size
@@ -259,9 +276,9 @@ class MAMLPPOOptimizer(MAMLFirstOrderOptimizer):
            (ndarray): inner kls - numpy array of shape (num_inner_grad_steps,)
            (float): outer_kl
         """
-        sess = tf.get_default_session()
-        feed_dict = self.create_feed_dict(input_val_dict)
-        loss, inner_kl, outer_kl = sess.run([self._loss, self._inner_kl, self._outer_kl], feed_dict=feed_dict)
+        sess                      = tf.get_default_session()
+        feed_dict                 = self.create_feed_dict(input_val_dict)
+        loss, inner_kl, outer_kl  = sess.run([self._loss, self._inner_kl, self._outer_kl], feed_dict=feed_dict)
         return loss, inner_kl, outer_kl
 
 

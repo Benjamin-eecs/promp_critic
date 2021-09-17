@@ -36,12 +36,24 @@ class MetaSampleProcessor_off(SampleProcessor):
             # fits baseline, compute advantages and stack path data
             samples_data,          paths       = self._compute_samples_data(paths)
             if isinstance(off_sample, dict):
-                off_samples_data,  off_paths   = self._compute_samples_data_off_critic(off_sample.get(meta_task))
+
+
+                # critic
+                #off_samples_data,  off_paths   = self._compute_samples_data_off_critic(off_sample.get(meta_task))
+
+                #value 
+                off_samples_data,  off_paths   = self._compute_samples_data_off_value(off_sample.get(meta_task))
+
                 off_policy_samples_data_meta_batch.append(off_samples_data)
 
             samples_data_meta_batch.append(samples_data)
             
             all_paths.extend(paths)
+
+
+        # optimize value network
+        if isinstance(off_sample, dict):
+            self.baseline_value.optimize_baseline_value(samples_data_meta_batch, self.baseline_value_fit_style)
 
         # 7) compute normalized trajectory-batch rewards (for E-MAML)
         overall_avg_reward         = np.mean(np.concatenate([samples_data['rewards'] for samples_data in samples_data_meta_batch]))
@@ -63,6 +75,8 @@ class MetaSampleProcessor_off(SampleProcessor):
             self.test_Step_1_AverageReturn.append(undiscounted_returns_mean)
         elif log_prefix == 'Step_1-':
             self.Step_1_AverageReturn.append(undiscounted_returns_mean)
+
+        #print(off_policy_samples_data_meta_batch)
         return samples_data_meta_batch, off_policy_samples_data_meta_batch
 
 

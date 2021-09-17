@@ -36,6 +36,7 @@ class ProMP_off(MAMLAlgo):
             name                           = "ppo_maml",
             learning_rate                  = 1e-3,
             
+            discount                       = 0.99,
             critic_learning_rate           = 1e-4,
             num_critic_steps               = 1,
 
@@ -55,9 +56,9 @@ class ProMP_off(MAMLAlgo):
 
 
 
-        self.critic_1_optimizer            = CriticOptimizer(learning_rate  = critic_learning_rate, max_epochs=num_critic_steps)
-        self.critic_2_optimizer            = CriticOptimizer(learning_rate  = critic_learning_rate, max_epochs=num_critic_steps)
 
+
+        self.discount                      = discount
         self.optimizer                     = MAMLPPOOptimizer(learning_rate =learning_rate, max_epochs=num_ppo_steps, num_minibatches=num_minibatches)
         self.clip_eps                      = clip_eps
 
@@ -74,102 +75,67 @@ class ProMP_off(MAMLAlgo):
 
         self._optimization_keys            = ['observations', 'actions', 'advantages', 'agent_infos']
 
-        self._critic_optimization_keys     = ['observations', 'actions', 'rewards', 'next_observations', 'current_q_values_1', 'current_q_values_2', 'task_ids', 'next_task_ids', 'agent_infos']
+        self._value_optimization_keys      = ['observations', 'actions', 'value_advantages', 'agent_infos']
+
+
+        self._critic_optimization_keys     = ['observations', 'actions', 'rewards', 'next_observations', 'next_actions', 'dones', 'discounts', 'task_ids', 'next_task_ids', 'current_q_values_1', 'current_q_values_2', 'next_q_values_1', 'next_q_values_2',  'agent_infos']
 
         self.name                          = name
         self.kl_coeff                      = [init_inner_kl_penalty] * self.meta_batch_size * self.num_inner_grad_steps
 
-        #self.build_graph()
+        self.build_graph()
 
     def _adapt_objective_sym(self, action_sym, adv_sym, dist_info_old_sym, dist_info_new_sym):
         with tf.variable_scope("likelihood_ratio"):
             likelihood_ratio_adapt = self.policy.distribution.likelihood_ratio_sym(action_sym,
                                                                                    dist_info_old_sym, dist_info_new_sym)
         with tf.variable_scope("surrogate_loss"):
+            #print(tf.shape(likelihood_ratio_adapt * adv_sym))
             surr_obj_adapt = -tf.reduce_mean(likelihood_ratio_adapt * adv_sym)
+            
         return surr_obj_adapt
 
-
-    def _adapt_objective_sym_off(self, action_sym, adv_sym, dist_info_old_sym, dist_info_new_sym):
+    def _adapt_objective_sym_off_value(self, action_sym, value_adv_sym, dist_info_old_sym, dist_info_new_sym):
         with tf.variable_scope("likelihood_ratio"):
-            likelihood_ratio_adapt = self.policy.distribution.likelihood_ratio_sym(action_sym,
+            likelihood_ratio_adapt            = self.policy.distribution.likelihood_ratio_sym(action_sym,
                                                                                    dist_info_old_sym, dist_info_new_sym)
-
-        with tf.variable_scope("log_likelihood"):
-            log_likelihood_adapt   = self.policy.distribution.log_likelihood_sym(action_sym, dist_info_new_sym)
 
 
         with tf.variable_scope("surrogate_loss"):
-            clip_obj_adapt_0              = tf.minimum(likelihood_ratio_adapt *adv_sym,
+            clip_obj_adapt_value              = tf.minimum(likelihood_ratio_adapt *value_adv_sym,
                                                           tf.clip_by_value(likelihood_ratio_adapt,
                                                           1 - self.off_clip_eps_lower,
-                                                          1 + self.off_clip_eps_upper) * adv_sym)
+                                                          1 + self.off_clip_eps_upper) * value_adv_sym)
 
-            surr_obj_adapt_0              = -tf.reduce_mean(clip_obj_adapt_0)
-
-            clip_likelihood_ratio_adapt   = tf.clip_by_value(likelihood_ratio_adapt,
-                                                             0,
-                                                             1 + self.off_clip_eps_upper)
-            clip_obj_adapt_1              =  tf.stop_gradient(clip_likelihood_ratio_adapt) * log_likelihood_adapt * adv_sym
-            surr_obj_adapt_1              = -tf.reduce_mean(clip_obj_adapt_1)
-        if self.clip_style == 0:
-            return surr_obj_adapt_0
-        elif self.clip_style == 1:
-            return surr_obj_adapt_1
+            surr_obj_adapt_value              = -tf.reduce_mean(clip_obj_adapt_value)
+        return surr_obj_adapt_value
 
 
 
+    def _adapt_objective_sym_off_critic(self, obs_sym, actions_sym, rewards_sym, next_obs_sym, next_actions_sym, dones_sym, discounts_sym, task_ids_sym, next_task_ids_sym, current_q_values_1_sym, current_q_values_2_sym, next_q_values_1_sym, next_q_values_2_sym, dist_infos_old_sym, dist_infos_new_sym):
 
-    def _adapt_objective_sym_off_critic(self, action_sym, adv_sym, dist_info_old_sym, dist_info_new_sym):
+
+
         with tf.variable_scope("likelihood_ratio"):
-            likelihood_ratio_adapt = self.policy.distribution.likelihood_ratio_sym(action_sym,
-                                                                                   dist_info_old_sym, dist_info_new_sym)
+            likelihood_ratio_adapt = self.policy.distribution.likelihood_ratio_sym(actions_sym,
+                                                                                   dist_infos_old_sym, dist_infos_new_sym)
 
-        with tf.variable_scope("log_likelihood"):
-            log_likelihood_adapt   = self.policy.distribution.log_likelihood_sym(action_sym, dist_info_new_sym)
+        with tf.variable_scope("adv_approximation"):
 
+            current_q_value_min_sym            = tf.stop_gradient(tf.minimum(current_q_values_1_sym, current_q_values_2_sym))
+            next_q_value_min_sym               = tf.stop_gradient(tf.minimum(next_q_values_1_sym, next_q_values_2_sym))
+            td_error                           = rewards_sym + discounts_sym * next_q_value_min_sym - current_q_value_min_sym 
+        
 
         with tf.variable_scope("surrogate_loss"):
-            clip_obj_adapt_0              = tf.minimum(likelihood_ratio_adapt *adv_sym,
+            clip_obj_adapt_critic              = tf.minimum(likelihood_ratio_adapt * td_error,
                                                           tf.clip_by_value(likelihood_ratio_adapt,
                                                           1 - self.off_clip_eps_lower,
-                                                          1 + self.off_clip_eps_upper) * adv_sym)
+                                                          1 + self.off_clip_eps_upper) * td_error)
+            #print(tf.shape(clip_obj_adapt_critic))
+            surr_obj_adapt_critic              = -tf.reduce_mean(clip_obj_adapt_critic)
+            return surr_obj_adapt_critic
 
-            surr_obj_adapt_0              = -tf.reduce_mean(clip_obj_adapt_0)
-
-            clip_likelihood_ratio_adapt   = tf.clip_by_value(likelihood_ratio_adapt,
-                                                             0,
-                                                             1 + self.off_clip_eps_upper)
-            clip_obj_adapt_1              =  tf.stop_gradient(clip_likelihood_ratio_adapt) * log_likelihood_adapt * adv_sym
-            surr_obj_adapt_1              = -tf.reduce_mean(clip_obj_adapt_1)
-        if self.clip_style == 0:
-            return surr_obj_adapt_0
-
-
-
-    def _critic_objective_sym(self, action_sym, rev_sym, next_ob_sym, next_action_sym, next_task_id_sym, dist_info_old_sym, dist_info_new_sym):
-        with tf.variable_scope("likelihood_ratio"):
-            likelihood_ratio_adapt = self.policy.distribution.likelihood_ratio_sym(action_sym,
-                                                                                   dist_info_old_sym, dist_info_new_sym)
-
-        with tf.variable_scope("log_likelihood"):
-            log_likelihood_adapt   = self.policy.distribution.log_likelihood_sym(action_sym, dist_info_new_sym)
-
-
-        with tf.variable_scope("surrogate_loss"):
-            clip_obj_adapt_0              = tf.minimum(likelihood_ratio_adapt *adv_sym,
-                                                          tf.clip_by_value(likelihood_ratio_adapt,
-                                                          1 - self.off_clip_eps_lower,
-                                                          1 + self.off_clip_eps_upper) * adv_sym)
-
-            surr_obj_adapt_0              = -tf.reduce_mean(clip_obj_adapt_0)
-
-            clip_likelihood_ratio_adapt   = tf.clip_by_value(likelihood_ratio_adapt,
-                                                             0,
-                                                             1 + self.off_clip_eps_upper)
-            clip_obj_adapt_1              =  tf.stop_gradient(clip_likelihood_ratio_adapt) * log_likelihood_adapt * adv_sym
-            surr_obj_adapt_1              = -tf.reduce_mean(clip_obj_adapt_1)
-        return surr_obj_adapt_0
 
 
     def build_graph(self):
@@ -187,39 +153,55 @@ class ProMP_off(MAMLAlgo):
             # this graph is only used for adapting the policy and not computing the meta-updates
             #self.adapted_policies_params, self.adapt_input_ph_dict, self.adapt_input_ph_dict_off = self._build_inner_adaption_off()
 
-            self.adapted_policies_params,      self.adapt_input_ph_dict,      self.adapt_input_ph_dict_off = self._build_inner_adaption_off_critic()
+            #self.adapted_policies_params,      self.adapt_input_ph_dict,      self.adapt_input_ph_dict_off_critic = self._build_inner_adaption_off_critic()
+            self.adapted_policies_params,      self.adapt_input_ph_dict,      self.adapt_input_ph_dict_off_value  = self._build_inner_adaption_off_value()
 
 
-            self.test_adapted_policies_params, self.test_adapt_input_ph_dict                               = self._build_inner_adaption()
+            self.test_adapted_policies_params, self.test_adapt_input_ph_dict                                      = self._build_inner_adaption()
 
             """ ----- Build graph for the meta-update ----- """
             self.meta_op_phs_dict                                                             = OrderedDict()
-            obs_phs, action_phs, adv_phs, dist_info_old_phs, all_phs_dict                     = self._make_input_placeholders('step0')
+            obs_phs,           action_phs,           adv_phs,                 dist_info_old_phs,           all_phs_dict                         = self._make_input_placeholders('step0')
+
+            obs_phs_off_value, action_phs_off_value, value_adv_phs_off_value, dist_info_old_phs_off_value, all_phs_dict_off_value               = self._make_input_placeholders_off_value('step2')
 
 
+            '''
 
-
-
-            obs_phs_off, action_phs_off, adv_phs_off, dist_info_old_phs_off, all_phs_dict_off = self._make_input_placeholders('step2')
-
+            obs_phs_off, \
+            actions_phs_off,\
+            rews_phs_off, \
+            next_obs_phs_off, \
+            next_actions_phs_off,  \
+            dones_phs_off,\
+            discounts_phs_off,\
+            task_ids_phs_off,  \
+            next_task_ids_phs_off,\
+            current_q_values_1_phs_off,   \
+            current_q_values_2_phs_off,   \
+            next_q_values_1_phs_off,   \
+            next_q_values_2_phs_off,   \
+            dist_infos_old_phs_off, \
+            all_phs_dict_off                                                                  = self._make_input_placeholders_critic('step2')
+            '''
 
 
 
 
 
             self.meta_op_phs_dict.update(all_phs_dict)
-            self.meta_op_phs_dict.update(all_phs_dict_off)
+            self.meta_op_phs_dict.update(all_phs_dict_off_value)
             
             
-            distribution_info_vars, distribution_info_vars_off, current_policy_params = [], [], []
+            distribution_info_vars, distribution_infos_vars_off_value, current_policy_params = [], [], []
             all_surr_objs, all_inner_kls = [], []
 
         for i in range(self.meta_batch_size):
-            dist_info_sym      = self.policy.distribution_info_sym(obs_phs[i],     params=None)
+            dist_info_sym                       = self.policy.distribution_info_sym(obs_phs[i],     params=None)
             distribution_info_vars.append(dist_info_sym)          # step 0
 
-            dist_info_sym_off  = self.policy.distribution_info_sym(obs_phs_off[i], params=None)
-            distribution_info_vars_off.append(dist_info_sym_off)  # step 2
+            dist_infos_sym_off_value            = self.policy.distribution_info_sym(obs_phs_off_value[i], params=None)
+            distribution_infos_vars_off_value.append(dist_infos_sym_off_value)  # step 2
 
             current_policy_params.append(self.policy.policy_params) # set to real policy_params (tf.Variable)
 
@@ -230,16 +212,19 @@ class ProMP_off(MAMLAlgo):
 
                 # inner adaptation step for each task
                 for i in range(self.meta_batch_size):
-                    surr_loss          = self._adapt_objective_sym(action_phs[i], adv_phs[i], dist_info_old_phs[i], distribution_info_vars[i])
+                    surr_loss                 = self._adapt_objective_sym(action_phs[i], adv_phs[i], dist_info_old_phs[i], distribution_info_vars[i])
 
-                    surr_loss_off      = self._adapt_objective_sym_off_critic(action_phs_off[i], adv_phs_off[i], dist_info_old_phs_off[i], distribution_info_vars_off[i])
+                    #surr_loss_off_critic      = self._adapt_objective_sym_off_critic(obs_phs_off[i], actions_phs_off[i], rews_phs_off[i], next_obs_phs_off[i], next_actions_phs_off[i], dones_phs_off[i], discounts_phs_off[i], task_ids_phs_off[i], next_task_ids_phs_off[i], current_q_values_1_phs_off[i], current_q_values_2_phs_off[i], next_q_values_1_phs_off[i], next_q_values_2_phs_off[i], dist_infos_old_phs_off[i], distribution_infos_vars_off[i])
 
-                    kl_loss            = tf.reduce_mean(self.policy.distribution.kl_sym(dist_info_old_phs[i], distribution_info_vars[i]))
+                    surr_loss_off_value       = self._adapt_objective_sym_off_value(action_phs_off_value[i], value_adv_phs_off_value[i], dist_info_old_phs_off_value[i], distribution_infos_vars_off_value[i])
+
+
+                    kl_loss                   = tf.reduce_mean(self.policy.distribution.kl_sym(dist_info_old_phs[i], distribution_info_vars[i]))
                     
                     #kl_loss_off = tf.reduce_mean(self.policy.distribution.kl_sym(dist_info_old_phs_off[i], distribution_info_vars[i]))
 
-                    surr_loss_all      = 0.5 * surr_loss + 0.5 * surr_loss_off
-                    adapted_params_var = self._adapt_sym(surr_loss_all, current_policy_params[i])
+                    surr_loss_all             = 0.5 * surr_loss + 0.5 * surr_loss_off_value
+                    adapted_params_var        = self._adapt_sym(surr_loss_all, current_policy_params[i])
 
                     adapted_policy_params.append(adapted_params_var)
                     kls.append(kl_loss)
@@ -287,11 +272,14 @@ class ProMP_off(MAMLAlgo):
                 surr_objs.append(surr_obj)
                 outer_kls.append(outer_kl)
 
-            mean_outer_kl    = tf.reduce_mean(tf.stack(outer_kls))
-            inner_kl_penalty = tf.reduce_mean(inner_kl_coeff * mean_inner_kl_per_step)
+
+
+
+            mean_outer_kl         = tf.reduce_mean(tf.stack(outer_kls))
+            inner_kl_penalty      = tf.reduce_mean(inner_kl_coeff * mean_inner_kl_per_step)
 
             """ Mean over meta tasks """
-            meta_objective   = tf.reduce_mean(tf.stack(surr_objs, 0)) + inner_kl_penalty
+            meta_objective        = tf.reduce_mean(tf.stack(surr_objs, 0)) + inner_kl_penalty
 
             self.optimizer.build_graph(
                 loss              =  meta_objective,
@@ -300,22 +288,68 @@ class ProMP_off(MAMLAlgo):
                 inner_kl          =  mean_inner_kl_per_step,
                 outer_kl          =  mean_outer_kl,
             )
+            '''
+            obs_phs_critic_op, \
+            actions_phs_critic_op,\
+            rews_phs_critic_op, \
+            next_obs_phs_critic_op, \
+            next_actions_phs_critic_op,  \
+            dones_phs_critic_op,\
+            discounts_phs_critic_op,\
+            task_ids_phs_critic_op,  \
+            next_task_ids_phs_critic_op,\
+            current_q_values_1_phs_critic_op,   \
+            current_q_values_2_phs_critic_op,   \
+            next_q_values_1_phs_critic_op,   \
+            next_q_values_2_phs_critic_op,   \
+            dist_infos_old_phs_critic_op, \
+            all_phs_dict_critic_op                        = self._make_input_placeholders_critic('critic_op')
 
-            critic_1_objective
+
+
+            self.critic_1_phs_dict                                                             = OrderedDict()
+            self.critic_2_phs_dict                                                             = OrderedDict()
+
+            self.critic_1_phs_dict.update(all_phs_dict_critic_op)
+            self.critic_2_phs_dict.update(all_phs_dict_critic_op)
+
+            critic_1_objs = []
+            critic_2_objs = []
+
+            for i in range(self.meta_batch_size):
+
+
+                critic_1_objective, critic_2_objective        = self._critic_objective_sym(obs_phs_critic_op[i],
+                                                                                           actions_phs_critic_op[i],
+                                                                                           rews_phs_critic_op[i],
+                                                                                           next_obs_phs_critic_op[i],
+                                                                                           next_actions_phs_critic_op[i],
+                                                                                           dones_phs_critic_op[i],
+                                                                                           discounts_phs_critic_op[i],
+                                                                                           task_ids_phs_critic_op[i],
+                                                                                           next_task_ids_phs_critic_op[i],
+                                                                                           current_q_values_1_phs_critic_op[i],
+                                                                                           current_q_values_2_phs_critic_op[i],
+                                                                                           next_q_values_1_phs_critic_op[i],
+                                                                                           next_q_values_2_phs_critic_op[i],
+                                                                                           dist_infos_old_phs_critic_op[i])
+                critic_1_objs.append(critic_1_objective)
+                critic_2_objs.append(critic_2_objective)
+
 
             self.critic_1_optimizer.build_graph(
-                loss             = critic_1_objective,
-                target           = self.critic_1,
-                input_ph_dict    = self.critic_1_phs_dict,
+                loss              = tf.reduce_mean(tf.stack(critic_1_objs, 0)),
+                target            = self.critic_1,
+                input_ph_dict     = self.critic_1_phs_dict,
             )
 
             self.critic_2_optimizer.build_graph(
-                loss             = critic_2_objective,
-                target           = self.critic_2,
-                input_ph_dict    = self.critic_2_phs_dict,
+                loss              = tf.reduce_mean(tf.stack(critic_2_objs, 0)),
+                target            = self.critic_2,
+                input_ph_dict     = self.critic_2_phs_dict,
             )
             
-
+            '''
 
 
 
@@ -331,7 +365,7 @@ class ProMP_off(MAMLAlgo):
         Returns:
             None
         """
-        meta_op_input_dict = self._extract_input_dict_meta_op(all_samples_data, self._optimization_keys)
+        meta_op_input_dict = self._extract_input_dict_meta_op(all_samples_data, self._optimization_keys, self._value_optimization_keys)
 
         # add kl_coeffs / clip_eps to meta_op_input_dict
         meta_op_input_dict['inner_kl_coeff'] = self.inner_kl_coeff
@@ -339,7 +373,7 @@ class ProMP_off(MAMLAlgo):
         meta_op_input_dict['clip_eps'] = self.clip_eps
 
         if log: logger.log("Optimizing")
-        loss_before = self.optimizer.optimize(input_val_dict=meta_op_input_dict)
+        loss_before                     = self.optimizer.optimize(input_val_dict=meta_op_input_dict)
 
         if log: logger.log("Computing statistics")
         loss_after, inner_kls, outer_kl = self.optimizer.compute_stats(input_val_dict=meta_op_input_dict)

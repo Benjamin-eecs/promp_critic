@@ -3,6 +3,7 @@ from meta_policy_search.envs.mujoco_envs.half_cheetah_rand_direc import HalfChee
 from meta_policy_search.envs.normalized_env import normalize
 from meta_policy_search.policies.meta_gaussian_mlp_policy import MetaGaussianMLPPolicy
 from meta_policy_search.critics.mlp_critic import MLPCritic
+from meta_policy_search.values.mlp_value import MLPValue_net
 
 from meta_policy_search.utils import logger
 from meta_policy_search.utils.utils import set_seed, ClassEncoder
@@ -27,6 +28,7 @@ import time
 meta_policy_search_path = '/'.join(os.path.realpath(os.path.dirname(__file__)).split('/')[:-1])
 
 
+meta_policy_search_path = '/'.join(os.path.realpath(os.path.dirname(__file__)).split('/'))
 
 def main(config):
     set_seed(config['seed'])
@@ -38,7 +40,7 @@ def main(config):
 
     env                           =  normalize(env) # apply normalize wrapper to env
 
-    policy  = MetaGaussianMLPPolicy(
+    policy        = MetaGaussianMLPPolicy(
             name                   = "meta-policy",
             obs_dim                = np.prod(env.observation_space.shape),
             action_dim             = np.prod(env.action_space.shape),
@@ -46,7 +48,19 @@ def main(config):
             hidden_sizes           = config['hidden_sizes'],
         )
 
+    baseline_value = MLPValue_net(
+            value_learning_rate    = config['value_learning_rate'],
+            num_value_steps        = config['num_value_steps'],
+            ob_dim                 = np.prod(env.observation_space.shape),
+            task_id_dim            = config['num_tasks'],
+            name                   = "baseline_value",
+            hidden_sizes           = config['hidden_sizes'],
+            )
+
+
     critic_1 = MLPCritic(
+            critic_learning_rate   =config['critic_learning_rate'],
+            num_critic_steps       =config['num_critic_steps'],
             ob_dim                 = np.prod(env.observation_space.shape),
             action_dim             = np.prod(env.action_space.shape),
             task_id_dim            = config['num_tasks'],
@@ -55,6 +69,8 @@ def main(config):
             )
 
     critic_2 = MLPCritic(
+            critic_learning_rate   =config['critic_learning_rate'],
+            num_critic_steps       =config['num_critic_steps'],
             ob_dim                 = np.prod(env.observation_space.shape),
             action_dim             = np.prod(env.action_space.shape),
             task_id_dim            = config['num_tasks'],
@@ -76,9 +92,12 @@ def main(config):
 
     # use critic to process sample
     sample_processor = MetaSampleProcessor_off(
+        policy                     = policy,
         critic_1                   = critic_1,
         critic_2                   = critic_2,
         baseline                   = baseline,
+        baseline_value             = baseline_value,
+        baseline_value_fit_style   = config['baseline_value_fit_style'],
         discount                   = config['discount'],
         gae_lambda                 = config['gae_lambda'],
         normalize_adv              = config['normalize_adv'],
@@ -86,28 +105,28 @@ def main(config):
     
     # update critic
     algo = ProMP_off(
-        policy                     =policy,
-        critic_1                   =critic_1,
-        critic_2                   =critic_2,
+        policy                     = policy,
+        critic_1                   = critic_1,
+        critic_2                   = critic_2,
+        baseline_value             = baseline_value,
+        inner_lr                   = config['inner_lr'],
+        meta_batch_size            = config['meta_batch_size'],
+        num_inner_grad_steps       = config['num_inner_grad_steps'],
 
-        inner_lr                   =config['inner_lr'],
-        meta_batch_size            =config['meta_batch_size'],
-        num_inner_grad_steps       =config['num_inner_grad_steps'],
+        learning_rate              = config['learning_rate'],
 
-        learning_rate              =config['learning_rate'],
+        discount                   = config['discount'],
+        critic_learning_rate       = config['critic_learning_rate'],
+        num_critic_steps           = config['num_critic_steps'],
 
-
-        critic_learning_rate       =config['critic_learning_rate'],
-        num_critic_steps           =config['num_critic_steps'],
-
-        num_ppo_steps              =config['num_promp_steps'],
-        clip_eps                   =config['clip_eps'],
-        target_inner_step          =config['target_inner_step'],
-        init_inner_kl_penalty      =config['init_inner_kl_penalty'],
-        adaptive_inner_kl_penalty  =config['adaptive_inner_kl_penalty'],
-        off_clip_eps_upper         =config['off_clip_eps_upper'],
-        off_clip_eps_lower         =config['off_clip_eps_lower'],
-        clip_style                 =config['clip_style']                 #0:TRPO 1:off policy pg
+        num_ppo_steps              = config['num_promp_steps'],
+        clip_eps                   = config['clip_eps'],
+        target_inner_step          = config['target_inner_step'],
+        init_inner_kl_penalty      = config['init_inner_kl_penalty'],
+        adaptive_inner_kl_penalty  = config['adaptive_inner_kl_penalty'],
+        off_clip_eps_upper         = config['off_clip_eps_upper'],
+        off_clip_eps_lower         = config['off_clip_eps_lower'],
+        clip_style                 = config['clip_style']                 #0:TRPO 1:off policy pg
     )
 
     #update target
@@ -119,6 +138,8 @@ def main(config):
         policy                     = policy,
         critic_1                   = critic_1,
         critic_2                   = critic_2,
+        baseline_value             = baseline_value,
+        tau                        = config['soft_update_tau'],
         n_itr                      = config['n_itr'],
         seeds                      = [config['seed']] * config['rollouts_per_meta_task'] * config['meta_batch_size'],
         num_inner_grad_steps       = config['num_inner_grad_steps'],
@@ -144,8 +165,8 @@ if __name__=="__main__":
 
 
 
-    parser.add_argument('--meta_batch_size',   type=int, default=2, help='meta batch size')
-    parser.add_argument('--rollout_per_task',  type=int, default=3, help='rollout per task')
+    parser.add_argument('--meta_batch_size',   type=int, default=4, help='meta batch size')
+    parser.add_argument('--rollout_per_task',  type=int, default=5, help='rollout per task')
 
 
 
@@ -158,10 +179,6 @@ if __name__=="__main__":
 
     args = parser.parse_args()
 
-
-
-
-
     args.dump_path = meta_policy_search_path + '/data/pro-mp/test_params_%d_seed_%d' % (args.sampler, args.seed)
 
     if args.config_file: # load configuration from json file
@@ -173,28 +190,71 @@ if __name__=="__main__":
     else: # use default config
 
         config = {
-            'seed'    : args.seed,
-            'sampler' : args.sampler,
+            'seed'                                : args.seed,
+            'sampler'                             : args.sampler,
 
 
 
             #off_policy config
             'num_tasks'                           : 2,
 
-            'buffer_length'                       : 200, # meta_batch_size * rollout_per_task * max_path_length *constant
-            'sample_batch_size'                   : 1,    # for each meta task
+            'buffer_length'                       : 4000, # meta_batch_size * rollout_per_task * max_path_length *constant
+
+            'sample_batch_size'                   : 5,    # for each meta task
+
             'off_clip_eps_upper'                  : 0.8,
             'off_clip_eps_lower'                  : 1,
             'clip_style'                          : 0,
 
-            #critic optimizer settings
-            'critic_learning_rate'                : 1e-4,
-            'num_critic_steps'                    : 1,
+
+
+
+            #value optimizer settings
+            'value_learning_rate'                 : 3e-2,
+            'num_value_steps'                     : 10,
+            'value_soft_update_tau'               : 1e-3,
+            'baseline_value_fit_style'            : "MC",
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
             'baseline'                            : 'LinearFeatureBaseline',
             'env'                                 : args.env,
-
+            #critic optimizer settings
+            'critic_learning_rate'                : 1e-2,
+            'num_critic_steps'                    : 5,
+            'soft_update_tau'                     : 1e-3,
 
 
             # sampler config

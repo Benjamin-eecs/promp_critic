@@ -47,9 +47,12 @@ class SampleProcessor(object):
 
     def __init__(
             self,
+            policy,
             critic_1,
             critic_2,
             baseline,
+            baseline_value,
+            baseline_value_fit_style,
             discount=0.99,
             gae_lambda=1,
             normalize_adv=False,
@@ -60,13 +63,18 @@ class SampleProcessor(object):
         assert 0 <= gae_lambda <= 1.0, 'gae_lambda must be in [0,1]'
         assert hasattr(baseline, 'fit') and hasattr(baseline, 'predict')
         
-        self.critic_1 = critic_1
-        self.critic_2 = critic_2
-        self.baseline = baseline
-        self.discount = discount
-        self.gae_lambda = gae_lambda
-        self.normalize_adv = normalize_adv
-        self.positive_adv = positive_adv
+
+        self.policy                    = policy
+        self.critic_1                  = critic_1
+        self.critic_2                  = critic_2
+        self.baseline                  = baseline
+        self.baseline_value            = baseline_value
+        self.baseline_value_fit_style  = baseline_value_fit_style
+
+        self.discount                  = discount
+        self.gae_lambda                = gae_lambda
+        self.normalize_adv             = normalize_adv
+        self.positive_adv              = positive_adv
         self.Step_1_AverageReturn      = []
         self.test_Step_1_AverageReturn = []
 
@@ -107,17 +115,27 @@ class SampleProcessor(object):
 
         # 1) compute discounted rewards (returns)
         for idx, path in enumerate(paths):
-            path["returns"] = utils.discount_cumsum(path["rewards"], self.discount)
+            path["returns"]                = utils.discount_cumsum(path["rewards"], self.discount)
+            path["discounted_rewards"]     = (path["returns"] - np.mean(path["returns"])) / (np.std(path["returns"]) +1e-7)
+            #path["discounted_rewards"]    =  path["returns"]
+
+            #normalized_rewards              = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-7)
 
         # 2) fit baseline estimator using the path returns and predict the return baselines
         self.baseline.fit(paths, target_key="returns")
         all_path_baselines = [self.baseline.predict(path) for path in paths]
 
         # 3) compute advantages and adjusted rewards
-        paths = self._compute_advantages(paths, all_path_baselines)
+        paths              = self._compute_advantages(paths, all_path_baselines)
+
+        '''
+        print(paths)
+        time.sleep(100)
+        paths              = self._compute_advantages_off_value(paths)
+        '''
 
         # 4) stack path data
-        observations, actions, rewards, returns, advantages, env_infos, agent_infos = self._stack_path_data(paths)
+        observations, actions, rewards, returns, task_ids, discounted_rewards, advantages, env_infos, agent_infos = self._stack_path_data(paths)
 
         # 5) if desired normalize / shift advantages
         if self.normalize_adv:
@@ -127,49 +145,46 @@ class SampleProcessor(object):
 
         # 6) create samples_data object
         samples_data = dict(
-            observations=observations,
-            actions=actions,
-            rewards=rewards,
-            returns=returns,
-            advantages=advantages,
-            env_infos=env_infos,
-            agent_infos=agent_infos,
+            observations        = observations,
+            actions             = actions,
+            rewards             = rewards,
+            returns             = returns,
+
+            discounted_rewards  = discounted_rewards,
+
+            task_ids            = task_ids,
+            advantages          = advantages,
+            env_infos           = env_infos,
+            agent_infos         = agent_infos,
+
         )
 
         return samples_data, paths
 
 
-    def _compute_samples_data_off(self, paths):
+
+    def _compute_samples_data_off_value(self, paths):
         assert type(paths) == list
 
-        # 1) compute discounted rewards (returns)
+        paths = self._compute_advantages_off_value(paths)
 
-        # 2) fit baseline estimator using the path returns and predict the return baselines
-        all_path_baselines_obs        = [self.baseline.predict_off_ob(path) for path in paths]
-        all_path_baselines_next_obs   = [self.baseline.predict_off_next_ob(path) for path in paths]
+        observations, actions, rewards, returns, value_advantages, env_infos, agent_infos = self._stack_path_data_value(paths)
 
-        # 3) compute advantages and adjusted rewards
-        paths = self._compute_advantages_off(paths, all_path_baselines_obs, all_path_baselines_next_obs)
 
-        # 4) stack path data
-        observations, actions, rewards, returns, advantages, env_infos, agent_infos = self._stack_path_data(paths)
+        value_advantages         = utils.normalize_advantages(value_advantages)
 
-        # 5) if desired normalize / shift advantages
-        if self.normalize_adv:
-            advantages = utils.normalize_advantages(advantages)
-        if self.positive_adv:
-            advantages = utils.shift_advantages_to_positive(advantages)
-
-        # 6) create samples_data object
         samples_data = dict(
-            observations    = observations,
-            actions         = actions,
-            rewards         = rewards,
-            returns         = returns,
-            advantages      = advantages,
-            env_infos       = env_infos,
-            agent_infos     = agent_infos,
+            observations         = observations,
+            actions              = actions,
+            rewards              = rewards,
+
+            returns              = returns,
+            value_advantages     = value_advantages,
+
+            env_infos            = env_infos,
+            agent_infos          = agent_infos,
         )
+
 
         return samples_data, paths
 
@@ -183,10 +198,14 @@ class SampleProcessor(object):
         # 2) predict the return baselines
 
         # 3) compute advantages and adjusted rewards
-        paths                                                                       = self._compute_q_target(paths)
+        paths = self._compute_current_q_values(paths)
+        paths = self._compute_next_actions(paths)          
+        paths = self._compute_next_q_values(paths)
 
         # 4) stack path data
-        observations, actions, rewards, next_observations, returns, current_q_values_1, current_q_values_2, task_ids, next_task_ids, dones, env_infos, agent_infos = self._stack_off_path_data(paths)
+        observations, actions, rewards, next_observations, next_actions, returns, current_q_values_1, current_q_values_2, next_q_values_1, next_q_values_2, task_ids, next_task_ids, dones, discounts, env_infos, agent_infos = self._stack_off_path_data(paths)
+
+
 
         # 6) create samples_data object
         samples_data = dict(
@@ -194,34 +213,83 @@ class SampleProcessor(object):
             actions              = actions,
             rewards              = rewards,
             next_observations    = next_observations,
+            next_actions         = next_actions,
+
             returns              = returns,
-            current_q_values_1   = current_q_values_1,
-            current_q_values_2   = current_q_values_2,
+
+            current_q_values_1   = current_q_values_1.squeeze(-1),
+            current_q_values_2   = current_q_values_2.squeeze(-1),
+            
+            next_q_values_1      = next_q_values_1.squeeze(-1),
+            next_q_values_2      = next_q_values_2.squeeze(-1),
+
+
             task_ids             = task_ids,
             next_task_ids        = next_task_ids,
+            
             dones                = dones,
+            discounts            = discounts,
+
             env_infos            = env_infos,
             agent_infos          = agent_infos,
         )
 
 
-        
-        print(paths)
-        time.sleep(100)
         return samples_data, paths
 
 
-    def _compute_q_target(self, paths):
+
+    def _compute_advantages_off_value(self, paths):
+        assert type(paths) == list
+
+        for idx, path in enumerate(paths):
+
+            states_value,_                  = self.baseline_value.get_state_values(path['observations'], path['task_ids'])
+            next_states_value,_             = self.baseline_value.get_state_values(path['next_observations'], path['task_ids'])
+
+            normalized_rewards              = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-7)
+            states_value                    = states_value[0].squeeze(-1)
+            next_states_value               = next_states_value[0].squeeze(-1)
+
+            path["value_advantages"]        = normalized_rewards + self.discount * next_states_value - states_value
+
+        return paths
+
+
+
+    def _compute_next_actions(self, paths):
+        assert type(paths) == list
+
+        for idx, path in enumerate(paths):
+
+            next_actions,_       = self.policy.get_actions_critic(path['observations'])
+            path["next_actions"] = next_actions
+            path["discounts"]    = np.array([self.discount]*next_actions.shape[0])
+
+        return paths
+
+
+    def _compute_current_q_values(self, paths):
         assert type(paths) == list
 
         for idx, path in enumerate(paths):
 
             current_q_values_1,_       = self.critic_1.get_q_values(path['observations'], path['actions'], path['task_ids'])
-            print(current_q_values_1)
-            time.sleep(100)
             path["current_q_values_1"] = current_q_values_1[0]
             current_q_values_2,_       = self.critic_2.get_q_values(path['observations'], path['actions'], path['task_ids'])
             path["current_q_values_2"] = current_q_values_2[0]
+
+        return paths
+
+    def _compute_next_q_values(self, paths):
+        assert type(paths) == list
+
+        for idx, path in enumerate(paths):
+
+            next_q_values_1,_          = self.critic_1.get_next_q_values(path['next_observations'], path['next_actions'], path['task_ids'])
+            path["next_q_values_1"] = next_q_values_1[0]
+            next_q_values_2,_          = self.critic_2.get_next_q_values(path['next_observations'], path['next_actions'], path['task_ids'])
+            path["next_q_values_2"] = next_q_values_2[0]
 
         return paths
 
@@ -276,30 +344,52 @@ class SampleProcessor(object):
         return paths
 
     def _stack_path_data(self, paths):
-        observations    = np.concatenate([path["observations"] for path in paths])
-        actions         = np.concatenate([path["actions"]      for path in paths])
-        rewards         = np.concatenate([path["rewards"]      for path in paths])
-        returns         = np.concatenate([path["returns"]      for path in paths])
-        advantages      = np.concatenate([path["advantages"]   for path in paths])
-        env_infos       = utils.concat_tensor_dict_list([path["env_infos"] for path in paths])
-        agent_infos     = utils.concat_tensor_dict_list([path["agent_infos"] for path in paths])
-        return observations, actions, rewards, returns, advantages, env_infos, agent_infos
+        observations        = np.concatenate([path["observations"] for path in paths])
+        actions             = np.concatenate([path["actions"]      for path in paths])
+        rewards             = np.concatenate([path["rewards"]      for path in paths])
+        returns             = np.concatenate([path["returns"]      for path in paths])
+        task_ids            = np.concatenate([path["task_ids"]      for path in paths])
+        discounted_rewards  = np.concatenate([path["discounted_rewards"]      for path in paths])
+        advantages          = np.concatenate([path["advantages"]   for path in paths])
+        env_infos           = utils.concat_tensor_dict_list([path["env_infos"] for path in paths])
+        agent_infos         = utils.concat_tensor_dict_list([path["agent_infos"] for path in paths])
+        return observations, actions, rewards, returns, task_ids, discounted_rewards, advantages, env_infos, agent_infos
+
+
+
+    def _stack_path_data_value(self, paths):
+        observations        = np.concatenate([path["observations"] for path in paths])
+        actions             = np.concatenate([path["actions"]      for path in paths])
+        rewards             = np.concatenate([path["rewards"]      for path in paths])
+        returns             = np.concatenate([path["returns"]      for path in paths])
+
+        value_advantages    = np.concatenate([path["value_advantages"]   for path in paths])
+        env_infos           = utils.concat_tensor_dict_list([path["env_infos"] for path in paths])
+        agent_infos         = utils.concat_tensor_dict_list([path["agent_infos"] for path in paths])
+
+        return observations, actions, rewards, returns, value_advantages, env_infos, agent_infos
 
     def _stack_off_path_data(self, paths):
         observations           = np.concatenate([path["observations"] for path in paths])
         actions                = np.concatenate([path["actions"]      for path in paths])
         rewards                = np.concatenate([path["rewards"]      for path in paths])
         next_observations      = np.concatenate([path["next_observations"]   for path in paths])
+        next_actions      = np.concatenate([path["next_actions"]   for path in paths])
+
         returns                = np.concatenate([path["returns"]      for path in paths])
         current_q_values_1     = np.concatenate([path["current_q_values_1"]   for path in paths])
         current_q_values_2     = np.concatenate([path["current_q_values_2"]   for path in paths])  
 
+        next_q_values_1        = np.concatenate([path["next_q_values_1"]   for path in paths])
+        next_q_values_2        = np.concatenate([path["next_q_values_2"]   for path in paths])  
+
         task_ids               = np.concatenate([path["task_ids"]   for path in paths])
         next_task_ids          = np.concatenate([path["task_ids"]   for path in paths])   
 
-        dones                  = np.concatenate([path["task_ids"]   for path in paths])   
+        dones                  = np.concatenate([path["dones"]   for path in paths])   
+        discounts              = np.concatenate([path["discounts"]   for path in paths])   
 
 
         env_infos              = utils.concat_tensor_dict_list([path["env_infos"] for path in paths])
         agent_infos            = utils.concat_tensor_dict_list([path["agent_infos"] for path in paths])
-        return observations, actions, rewards, next_observations, returns, current_q_values_1, current_q_values_2, task_ids, next_task_ids, dones, env_infos, agent_infos
+        return observations, actions, rewards, next_observations, next_actions, returns, current_q_values_1, current_q_values_2, next_q_values_1, next_q_values_2, task_ids, next_task_ids, dones, discounts, env_infos, agent_infos

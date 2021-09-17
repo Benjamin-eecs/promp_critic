@@ -1,6 +1,7 @@
 from meta_policy_search import utils
 from meta_policy_search.policies.base import Policy
 from meta_policy_search.critics.base import Critic
+from meta_policy_search.values.base import Value_net
 
 
 from collections import OrderedDict
@@ -16,14 +17,16 @@ class MetaAlgo(object):
         policy (Policy) : policy object
     """
 
-    def __init__(self, policy, critic_1, critic_2):
+    def __init__(self, policy, critic_1, critic_2, baseline_value):
         assert isinstance(policy,  Policy)
         assert isinstance(critic_1, Critic)
         assert isinstance(critic_2, Critic)
+        assert isinstance(baseline_value, Value_net)
        
         self.policy                      = policy
         self.critic_1                    = critic_1
         self.critic_2                    = critic_2
+        self.baseline_value              = baseline_value
 
         self._optimization_keys          = None
         self._critic_optimization_keys   = None
@@ -106,8 +109,8 @@ class MAMLAlgo(MetaAlgo):
         num_inner_grad_steps (int) : number of gradient updates taken per maml iteration
         trainable_inner_step_size (boolean): whether make the inner step size a trainable variable
     """
-    def __init__(self, policy, critic_1, critic_2, inner_lr=0.1, meta_batch_size=20, num_inner_grad_steps=1, trainable_inner_step_size=False):
-        super(MAMLAlgo, self).__init__(policy, critic_1, critic_2)
+    def __init__(self, policy, critic_1, critic_2, baseline_value, inner_lr=0.1, meta_batch_size=20, num_inner_grad_steps=1, trainable_inner_step_size=False):
+        super(MAMLAlgo, self).__init__(policy, critic_1, critic_2, baseline_value)
 
         assert type(num_inner_grad_steps) and num_inner_grad_steps >= 0
         assert type(meta_batch_size) == int
@@ -161,6 +164,52 @@ class MAMLAlgo(MetaAlgo):
 
         return obs_phs, action_phs, adv_phs, dist_info_phs, all_phs_dict
 
+    def _make_input_placeholders_off_value(self, prefix=''):
+        """
+        Args:
+            prefix (str) : a string to prepend to the name of each variable
+
+        Returns:
+            (tuple) : a tuple containing lists of placeholders for each input type and meta task, 
+            and for convenience, a list containing all placeholders created
+        """
+        obs_phs_off_value, action_phs_off_value, value_adv_phs_off_value, dist_info_phs_off_value, dist_info_phs_list_off_value = [], [], [], [], []
+        dist_info_specs      = self.policy.distribution.dist_info_specs
+
+        all_phs_dict_off_value = OrderedDict()
+
+        for task_id in range(self.meta_batch_size):
+            # observation ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None, self.policy.obs_dim], name='obs' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict_off_value['%s_task%i_%s'%(prefix, task_id, 'observations')] = ph
+            obs_phs_off_value.append(ph)
+
+            # action ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None, self.policy.action_dim], name='action' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict_off_value['%s_task%i_%s' % (prefix, task_id, 'actions')] = ph
+            action_phs_off_value.append(ph)
+
+            # advantage ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None], name='value_advantage' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict_off_value['%s_task%i_%s' % (prefix, task_id, 'value_advantages')] = ph
+            value_adv_phs_off_value.append(ph)
+
+            # distribution / agent info
+            dist_info_ph_dict = {}
+            for info_key, shape in dist_info_specs:
+                ph = tf.placeholder(dtype=tf.float32, shape=[None] + list(shape), name='%s_%s_%i' % (info_key, prefix, task_id))
+                all_phs_dict_off_value['%s_task%i_agent_infos/%s' % (prefix, task_id, info_key)] = ph
+                dist_info_ph_dict[info_key] = ph
+            dist_info_phs_off_value.append(dist_info_ph_dict)
+
+        return obs_phs_off_value, action_phs_off_value, value_adv_phs_off_value, dist_info_phs_off_value, all_phs_dict_off_value
+
+
+
+
+
+
+
 
 
     def _make_input_placeholders_critic(self, prefix=''):
@@ -172,62 +221,82 @@ class MAMLAlgo(MetaAlgo):
             (tuple) : a tuple containing lists of placeholders for each input type and meta task, 
             and for convenience, a list containing all placeholders created
         """
-        ob_phs, action_phs, rew_phs, next_ob_phs, current_q_value_1_phs, current_q_value_2_phs, true_task_id_phs, true_next_task_id_phs, dist_info_phs, dist_info_phs_list = [], [], [], [], [], [], [], [], [], []
+        obs_phs, actions_phs, rews_phs, next_obs_phs, next_actions_phs, dones_phs, discounts_phs, task_ids_phs, next_task_ids_phs, current_q_values_1_phs, current_q_values_2_phs, next_q_values_1_phs, next_q_values_2_phs, dist_infos_phs = [], [], [], [], [], [], [], [], [], [], [], [], [], []
         
-        dist_info_specs = self.policy.distribution.dist_info_specs
+        dist_info_specs    = self.policy.distribution.dist_info_specs
 
-        all_phs_dict = OrderedDict()
+        all_phs_dict       = OrderedDict()
 
 
         for task_id in range(self.meta_batch_size):
             # observation ph
             ph = tf.placeholder(dtype=tf.float32, shape=[None, self.policy.obs_dim],    name='ob' + '_' + prefix + '_' + str(task_id))
             all_phs_dict['%s_task%i_%s'%(prefix, task_id, 'observations')] = ph
-            ob_phs.append(ph)
-
+            obs_phs.append(ph)
 
             # action ph
             ph = tf.placeholder(dtype=tf.float32, shape=[None, self.policy.action_dim], name='action' + '_' + prefix + '_' + str(task_id))
             all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'actions')] = ph
-            action_phs.append(ph)
-
-
+            actions_phs.append(ph)
 
             # reward ph
             ph = tf.placeholder(dtype=tf.float32, shape=[None], name='reward' + '_' + prefix + '_' + str(task_id))
             all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'rewards')] = ph
-            rew_phs.append(ph)
-
+            rews_phs.append(ph)
 
             # next_observation ph
             ph = tf.placeholder(dtype=tf.float32, shape=[None, self.policy.obs_dim], name='next_ob' + '_' + prefix + '_' + str(task_id))
             all_phs_dict['%s_task%i_%s'%(prefix, task_id, 'next_observations')] = ph
-            next_ob_phs.append(ph)
+            next_obs_phs.append(ph)
 
+
+            # next action ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None, self.policy.action_dim], name='next_action' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'next_actions')] = ph
+            next_actions_phs.append(ph)
+
+            # done ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None], name='done' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'dones')] = ph
+            dones_phs.append(ph)
+
+            # discount ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None], name='discount' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'discounts')] = ph
+            discounts_phs.append(ph)
+
+            # true_task_id ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None, self.critic_1.task_id_dim], name='task_id' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s'%(prefix, task_id, 'task_ids')] = ph
+            task_ids_phs.append(ph)
+
+            # true_next_task_id ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None, self.critic_1.task_id_dim], name='next_task_id' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s'%(prefix, task_id, 'next_task_ids')] = ph
+            next_task_ids_phs.append(ph)
 
 
             # current_q_value_1 ph
-            ph = tf.placeholder(dtype=tf.float32, shape=[None, 1], name='current_q_value_1' + '_' + prefix + '_' + str(task_id))
-            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'current_q_value_1')] = ph
-            current_q_value_1_phs.append(ph)
+            ph = tf.placeholder(dtype=tf.float32, shape=[None], name='current_q_value_1' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'current_q_values_1')] = ph
+            current_q_values_1_phs.append(ph)
 
 
             # current_q_value_2 ph
-            ph = tf.placeholder(dtype=tf.float32, shape=[None, 1], name='current_q_value_2' + '_' + prefix + '_' + str(task_id))
-            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'current_q_value_2')] = ph
-            current_q_value_2_phs.append(ph)
+            ph = tf.placeholder(dtype=tf.float32, shape=[None], name='current_q_value_2' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'current_q_values_2')] = ph
+            current_q_values_2_phs.append(ph)
+
+            # next_q_value_1 ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None], name='next_q_value_1' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'next_q_values_1')] = ph
+            next_q_values_1_phs.append(ph)
 
 
-            # true_task_id ph
-            ph = tf.placeholder(dtype=tf.float32, shape=[None, self.critic_1.task_id_dim], name='true_task_id' + '_' + prefix + '_' + str(task_id))
-            all_phs_dict['%s_task%i_%s'%(prefix, task_id, 'true_task_id')] = ph
-            true_task_id_phs.append(ph)
-
-            # true_next_task_id ph
-            ph = tf.placeholder(dtype=tf.float32, shape=[None, self.critic_1.task_id_dim], name='true_next_task_id' + '_' + prefix + '_' + str(task_id))
-            all_phs_dict['%s_task%i_%s'%(prefix, task_id, 'true_next_task_id')] = ph
-            true_next_task_id_phs.append(ph)
-
+            # current_q_value_2 ph
+            ph = tf.placeholder(dtype=tf.float32, shape=[None], name='next_q_value_2' + '_' + prefix + '_' + str(task_id))
+            all_phs_dict['%s_task%i_%s' % (prefix, task_id, 'next_q_values_2')] = ph
+            next_q_values_2_phs.append(ph)
 
             # distribution / agent info
             dist_info_ph_dict = {}
@@ -235,64 +304,15 @@ class MAMLAlgo(MetaAlgo):
                 ph = tf.placeholder(dtype=tf.float32, shape=[None] + list(shape), name='%s_%s_%i' % (info_key, prefix, task_id))
                 all_phs_dict['%s_task%i_agent_infos/%s' % (prefix, task_id, info_key)] = ph
                 dist_info_ph_dict[info_key] = ph
-            dist_info_phs.append(dist_info_ph_dict)
+            dist_infos_phs.append(dist_info_ph_dict)
 
-        return ob_phs, action_phs, rew_phs, next_ob_phs, current_q_value_1_phs, current_q_value_2_phs, true_task_id_phs, true_next_task_id_phs, dist_info_phs, all_phs_dict
+        return obs_phs, actions_phs, rews_phs, next_obs_phs, next_actions_phs, dones_phs, discounts_phs, task_ids_phs, next_task_ids_phs, current_q_values_1_phs, current_q_values_2_phs, next_q_values_1_phs, next_q_values_2_phs,  dist_infos_phs, all_phs_dict
 
 
 
     def _adapt_objective_sym(self, action_sym, adv_sym, dist_info_old_sym, dist_info_new_sym):
         raise NotImplementedError
 
-    def _build_inner_adaption_off(self):
-        """
-        Creates the symbolic graph for the one-step inner gradient update (It'll be called several times if
-        more gradient steps are needed)
-
-        Args:
-            some placeholders
-
-        Returns:
-            adapted_policies_params (list): list of Ordered Dict containing the symbolic post-update parameters
-            adapt_input_list_ph (list): list of placeholders
-
-        """
-        obs_phs,     action_phs,     adv_phs,     dist_info_old_phs,     adapt_input_ph_dict     = self._make_input_placeholders('adapt')
-
-        obs_phs_off, action_phs_off, adv_phs_off, dist_info_old_phs_off, adapt_input_ph_dict_off = self._make_input_placeholders('adapt1')
-
-
-        adapted_policies_params = []
-
-        for i in range(self.meta_batch_size):
-            with tf.variable_scope("adapt_task_%i" % i):
-                with tf.variable_scope("adapt_objective"):
-                    distribution_info_new     = self.policy.distribution_info_sym(obs_phs[i],
-                                                                              params=self.policy.policies_params_phs[i])
-
-
-                    # inner surrogate objective
-                    surr_obj_adapt     = self._adapt_objective_sym(action_phs[i], adv_phs[i],
-                                                               dist_info_old_phs[i], distribution_info_new)
-
-            with tf.variable_scope("adapt1_task_%i" % i):
-                with tf.variable_scope("adapt1_objective"):
-
-                    distribution_info_new_off = self.policy.distribution_info_sym(obs_phs_off[i],
-                                                                              params=self.policy.policies_params_phs[i])
-                    
-                    # inner off_policy surrogate objective
-                    surr_obj_adapt_off = self._adapt_objective_sym_off(action_phs_off[i], adv_phs_off[i],
-                                                               dist_info_old_phs_off[i], distribution_info_new_off)  
-
-            # get tf operation for adapted (post-update) policy
-            with tf.variable_scope("adapt_step"):
-                all_surr_obj_adapt   = 0.5 * surr_obj_adapt + 0.5 * surr_obj_adapt_off
-                adapted_policy_param = self._adapt_sym(all_surr_obj_adapt, self.policy.policies_params_phs[i])
-
-            adapted_policies_params.append(adapted_policy_param)
-
-        return adapted_policies_params, adapt_input_ph_dict, adapt_input_ph_dict_off
 
 
     def _build_inner_adaption_off_critic(self):
@@ -310,9 +330,21 @@ class MAMLAlgo(MetaAlgo):
         """
         obs_phs,  action_phs,  adv_phs,   dist_info_old_phs,  adapt_input_ph_dict     = self._make_input_placeholders('adapt')
 
-        obs_phs_off_critic,              action_phs_off_critic,           rews_phs_off_critic, next_obs_phs_off_critic,  current_q_value_1_phs_off_critic, current_q_value_2_phs_off_critic,   \
-        true_task_id_phs_off_critic,     true_next_task_id_phs_off_critic,\
-        dist_info_old_phs_off_critic,     adapt_input_ph_dict_off_critic              = self._make_input_placeholders_critic('adapt1')
+        obs_phs_off_critic, \
+        actions_phs_off_critic,\
+        rews_phs_off_critic, \
+        next_obs_phs_off_critic, \
+        next_actions_phs_off_critic,  \
+        dones_phs_off_critic,\
+        discounts_phs_off_critic,\
+        task_ids_phs_off_critic,  \
+        next_task_ids_phs_off_critic,\
+        current_q_values_1_phs_off_critic,   \
+        current_q_values_2_phs_off_critic,   \
+        next_q_values_1_phs_off_critic,   \
+        next_q_values_2_phs_off_critic,   \
+        dist_infos_old_phs_off_critic, \
+        adapt_input_ph_dict_off_critic                                                 = self._make_input_placeholders_critic('adapt1')
 
 
         adapted_policies_params = []
@@ -331,15 +363,27 @@ class MAMLAlgo(MetaAlgo):
             with tf.variable_scope("adapt1_task_%i" % i):
                 with tf.variable_scope("adapt1_objective"):
 
-                    distribution_info_new_off_critic = self.policy.distribution_info_sym(obs_phs_off_critic[i],
+                    distribution_infos_new_off_critic = self.policy.distribution_info_sym(obs_phs_off_critic[i],
                                                                                   params=self.policy.policies_params_phs[i])
                     
                     # inner off_policy surrogate objective
-                    surr_obj_adapt_off = self._adapt_objective_sym_off_critic(action_phs_off_critic[i], 
-                                                                              adv_phs_off_critic[i],
-                                                                              
-                                                                              dist_info_old_phs_off[i], 
-                                                                              distribution_info_new_off)  
+                    surr_obj_adapt_off               = self._adapt_objective_sym_off_critic(obs_phs_off_critic[i],
+                                                                                            actions_phs_off_critic[i], 
+                                                                                            rews_phs_off_critic[i],
+                                                                                            next_obs_phs_off_critic[i],
+                                                                                            next_actions_phs_off_critic[i],
+
+                                                                                            dones_phs_off_critic[i],
+                                                                                            discounts_phs_off_critic[i],
+                                                                                            task_ids_phs_off_critic[i],
+                                                                                            next_task_ids_phs_off_critic[i],
+
+                                                                                            current_q_values_1_phs_off_critic[i],
+                                                                                            current_q_values_2_phs_off_critic[i],
+                                                                                            next_q_values_1_phs_off_critic[i],
+                                                                                            next_q_values_2_phs_off_critic[i],
+                                                                                            dist_infos_old_phs_off_critic[i], 
+                                                                                            distribution_infos_new_off_critic)  
 
             # get tf operation for adapted (post-update) policy
             with tf.variable_scope("adapt_step"):
@@ -348,7 +392,63 @@ class MAMLAlgo(MetaAlgo):
 
             adapted_policies_params.append(adapted_policy_param)
 
-        return adapted_policies_params, adapt_input_ph_dict, adapt_input_ph_dict_off
+        return adapted_policies_params, adapt_input_ph_dict, adapt_input_ph_dict_off_critic
+
+
+
+    def _build_inner_adaption_off_value(self):
+        """
+        Creates the symbolic graph for the one-step inner gradient update (It'll be called several times if
+        more gradient steps are needed)
+        Args:
+            some placeholders
+        Returns:
+            adapted_policies_params (list): list of Ordered Dict containing the symbolic post-update parameters
+            adapt_input_list_ph (list): list of placeholders
+        """
+        obs_phs,           action_phs,           adv_phs,                 dist_info_old_phs,           adapt_input_ph_dict           = self._make_input_placeholders('adapt')
+
+        obs_phs_off_value, action_phs_off_value, value_adv_phs_off_value, dist_info_old_phs_off_value, adapt_input_ph_dict_off_value = self._make_input_placeholders_off_value('adapt1')
+
+
+        adapted_policies_params = []
+
+        for i in range(self.meta_batch_size):
+            with tf.variable_scope("adapt_task_%i" % i):
+                with tf.variable_scope("adapt_objective"):
+                    distribution_info_new           = self.policy.distribution_info_sym(obs_phs[i],
+                                                                              params=self.policy.policies_params_phs[i])
+
+
+                    # inner surrogate objective
+                    surr_obj_adapt                  = self._adapt_objective_sym(action_phs[i], adv_phs[i],
+                                                               dist_info_old_phs[i], distribution_info_new)
+
+            with tf.variable_scope("adapt1_task_%i" % i):
+                with tf.variable_scope("adapt1_objective"):
+
+                    distribution_info_new_off_value = self.policy.distribution_info_sym(obs_phs_off_value[i],
+                                                                              params=self.policy.policies_params_phs[i])
+                    
+                    # inner off_policy surrogate objective
+                    surr_obj_adapt_off_value        = self._adapt_objective_sym_off_value(action_phs_off_value[i],         value_adv_phs_off_value[i],
+                                                                                    dist_info_old_phs_off_value[i], distribution_info_new_off_value)  
+
+            # get tf operation for adapted (post-update) policy
+            with tf.variable_scope("adapt_step"):
+                all_surr_obj_adapt   = 0.5 * surr_obj_adapt + 0.5 * surr_obj_adapt_off_value
+                adapted_policy_param = self._adapt_sym(all_surr_obj_adapt, self.policy.policies_params_phs[i])
+
+            adapted_policies_params.append(adapted_policy_param)
+
+        return adapted_policies_params, adapt_input_ph_dict, adapt_input_ph_dict_off_value
+
+
+
+
+
+
+
 
     def _build_inner_adaption(self):
         """
@@ -456,19 +556,24 @@ class MAMLAlgo(MetaAlgo):
         sess = tf.get_default_session()
 
         # prepare feed dict
-        input_dict_on                   = self._extract_input_dict(on_samples,  self._optimization_keys, prefix='adapt')
-        input_dict_off                  = self._extract_input_dict(off_critic_samples, self._critic_optimization_keys, prefix='adapt1')
+        input_dict_on                   = self._extract_input_dict(on_samples,         self._optimization_keys, prefix='adapt')
+        input_dict_off_critic           = self._extract_input_dict(off_critic_samples, self._critic_optimization_keys, prefix='adapt1')
 
+
+        #print(input_dict_off)
 
         input_ph_dict_on                = self.adapt_input_ph_dict
-        input_ph_dict_off_critic        = self.adapt_input_ph_dict_off
+        input_ph_dict_off_critic        = self.adapt_input_ph_dict_off_critic
 
 
-        feed_dict_inputs_on             = utils.create_feed_dict(placeholder_dict=input_ph_dict_on, value_dict=input_dict_on)
-        feed_dict_inputs_off            = utils.create_feed_dict(placeholder_dict=input_ph_dict_off, value_dict=input_dict_off)
+        #print(input_dict_off_critic)
+        #print(input_ph_dict_off_critic)
+
+        feed_dict_inputs_on             = utils.create_feed_dict(placeholder_dict=input_ph_dict_on,  value_dict=input_dict_on)
+        feed_dict_inputs_off_critic     = utils.create_feed_dict(placeholder_dict=input_ph_dict_off_critic, value_dict=input_dict_off_critic)
 
 
-        feed_dict_inputs_all            = {**feed_dict_inputs_on, **feed_dict_inputs_off}
+        feed_dict_inputs_all            = {**feed_dict_inputs_on, **feed_dict_inputs_off_critic}
         
         feed_dict_params                = self.policy.policies_params_feed_dict
 
@@ -485,7 +590,7 @@ class MAMLAlgo(MetaAlgo):
 
 
 
-    def _adapt_off(self, on_samples, off_samples):
+    def _adapt_off_value(self, on_samples, off_value_samples):
         """
         Performs MAML inner step for each task and stores the updated parameters in the policy
 
@@ -493,38 +598,44 @@ class MAMLAlgo(MetaAlgo):
             samples (list) : list of dicts of samples (each is a dict) split by meta task
 
         """
-        assert len(on_samples)  == self.meta_batch_size
-        assert len(off_samples) == self.meta_batch_size
+        assert len(on_samples)         == self.meta_batch_size
+        assert len(off_value_samples)  == self.meta_batch_size
 
         assert [sample_dict.keys() for sample_dict in on_samples]
-        assert [sample_dict.keys() for sample_dict in off_samples]
+        assert [sample_dict.keys() for sample_dict in off_value_samples]
 
 
-        sess = tf.get_default_session()
+        sess                            = tf.get_default_session()
 
         # prepare feed dict
-        input_dict_on            = self._extract_input_dict(on_samples,  self._optimization_keys, prefix='adapt')
-        input_dict_off           = self._extract_input_dict(off_samples, self._critic_optimization_keys, prefix='adapt1')
+        input_dict_on                   = self._extract_input_dict(on_samples,         self._optimization_keys, prefix='adapt')
+        input_dict_off_value            = self._extract_input_dict(off_value_samples,  self._value_optimization_keys, prefix='adapt1')
 
 
-        input_ph_dict_on         = self.adapt_input_ph_dict
-        input_ph_dict_off        = self.adapt_input_ph_dict_off
+        #print(input_dict_off)
+
+        input_ph_dict_on                = self.adapt_input_ph_dict
+        input_ph_dict_off_value         = self.adapt_input_ph_dict_off_value
 
 
-        feed_dict_inputs_on      = utils.create_feed_dict(placeholder_dict=input_ph_dict_on, value_dict=input_dict_on)
-        feed_dict_inputs_off     = utils.create_feed_dict(placeholder_dict=input_ph_dict_off, value_dict=input_dict_off)
+        #print(input_dict_off_critic)
+        #print(input_ph_dict_off_critic)
 
-        feed_dict_inputs_all     = {**feed_dict_inputs_on, **feed_dict_inputs_off}
+        feed_dict_inputs_on             = utils.create_feed_dict(placeholder_dict=input_ph_dict_on,  value_dict=input_dict_on)
+        feed_dict_inputs_off_value      = utils.create_feed_dict(placeholder_dict=input_ph_dict_off_value, value_dict=input_dict_off_value)
+
+
+        feed_dict_inputs_all            = {**feed_dict_inputs_on, **feed_dict_inputs_off_value}
         
-        feed_dict_params         = self.policy.policies_params_feed_dict
+        feed_dict_params                = self.policy.policies_params_feed_dict
 
 
  
-        feed_dict = {**feed_dict_inputs_all, **feed_dict_params}  # merge the two feed dicts
+        feed_dict                       = {**feed_dict_inputs_all, **feed_dict_params}  # merge the two feed dicts
 
         
         # compute the post-update / adapted policy parameters
-        adapted_policies_params_vals = sess.run(self.adapted_policies_params, feed_dict=feed_dict)
+        adapted_policies_params_vals    = sess.run(self.adapted_policies_params, feed_dict=feed_dict)
 
         # store the new parameter values in the policy
         self.policy.update_task_parameters(adapted_policies_params_vals)
@@ -567,7 +678,7 @@ class MAMLAlgo(MetaAlgo):
                     raise NotImplementedError
         return input_dict
 
-    def _extract_input_dict_meta_op(self, all_samples_data, keys):
+    def _extract_input_dict_meta_op(self, all_samples_data, keys, keys_value):
         """
         Creates the input dict for all the samples data required to perform the meta-update
 
@@ -583,7 +694,11 @@ class MAMLAlgo(MetaAlgo):
 
         meta_op_input_dict = OrderedDict()
         for step_id, samples_data in enumerate(all_samples_data):  # these are the gradient steps
-            dict_input_dict_step = self._extract_input_dict(samples_data, keys, prefix='step%i'%step_id)
+            if step_id   != 2:
+                dict_input_dict_step = self._extract_input_dict(samples_data, keys, prefix='step%i'%step_id)
+            elif step_id == 2:
+                dict_input_dict_step = self._extract_input_dict(samples_data, keys_value, prefix='step%i'%step_id)
+
             meta_op_input_dict.update(dict_input_dict_step)
 
         return meta_op_input_dict

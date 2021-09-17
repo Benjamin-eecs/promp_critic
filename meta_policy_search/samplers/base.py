@@ -115,10 +115,10 @@ class SampleProcessor(object):
 
         # 1) compute discounted rewards (returns)
         for idx, path in enumerate(paths):
-            path["returns"]                = utils.discount_cumsum(path["rewards"], self.discount)
-            normalized_rewards_on          = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-8)
-            path["discounted_rewards"]     = utils.discount_cumsum(normalized_rewards_on, self.discount)
-            #path["discounted_rewards"]    =  path["returns"]
+            path["returns"]                =  utils.discount_cumsum(path["rewards"], self.discount)
+            normalized_rewards_on          =  (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-8)
+            #path["discounted_rewards"]     = utils.discount_cumsum(normalized_rewards_on, self.discount)
+            path["discounted_rewards"]     =  path["returns"]
 
             #normalized_rewards              = (path["rewards"] - np.mean(path["rewards"])) / (np.std(path["rewards"]) +1e-7)
 
@@ -167,7 +167,7 @@ class SampleProcessor(object):
     def _compute_samples_data_off_value(self, paths):
         assert type(paths) == list
 
-        paths = self._compute_advantages_off_value(paths)
+        paths                    = self._compute_advantages_off_value(paths)
 
         observations, actions, rewards, returns, value_advantages, env_infos, agent_infos = self._stack_path_data_value(paths)
 
@@ -252,7 +252,7 @@ class SampleProcessor(object):
             states_value                    = states_value[0].squeeze(-1)
             next_states_value               = next_states_value[0].squeeze(-1)
 
-            path["value_advantages"]        = normalized_rewards + self.discount * next_states_value - states_value
+            path["value_advantages"]        = path["rewards"] + self.discount * next_states_value - states_value
 
         return paths
 

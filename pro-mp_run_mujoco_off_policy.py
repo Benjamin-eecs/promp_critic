@@ -198,8 +198,8 @@ if __name__=="__main__":
             #off_policy config
             'num_tasks'                           : 2,
 
-            'buffer_length'                       : 4000, # meta_batch_size * rollout_per_task * max_path_length *constant
-            'sample_batch_size'                   : 5,    # for each meta task
+            'buffer_length'                       : 4000,     # meta_batch_size * rollout_per_task * max_path_length *constant
+            'sample_batch_size'                   : 5,        # for each meta task
 
             'off_clip_eps_upper'                  : 0.8,
             'off_clip_eps_lower'                  : 1,
@@ -213,38 +213,6 @@ if __name__=="__main__":
             'num_value_steps'                     : 10,
             'value_soft_update_tau'               : 1e-3,
             'baseline_value_fit_style'            : "MC",
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

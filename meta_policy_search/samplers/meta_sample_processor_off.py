@@ -32,7 +32,7 @@ class MetaSampleProcessor_off(SampleProcessor):
         all_paths = []
 
         for meta_task, paths in paths_meta_batch.items():
-
+            value_data_meta_batch              = []
             # fits baseline, compute advantages and stack path data
             samples_data,          paths       = self._compute_samples_data(paths)
             if isinstance(off_sample, dict):
@@ -40,7 +40,10 @@ class MetaSampleProcessor_off(SampleProcessor):
 
                 # critic
                 #off_samples_data,  off_paths   = self._compute_samples_data_off_critic(off_sample.get(meta_task))
+                
 
+                value_data_meta_batch.append(samples_data)
+                #self.baseline_value.optimize_baseline_value(value_data_meta_batch, self.baseline_value_fit_style)
                 #value 
                 off_samples_data,  off_paths   = self._compute_samples_data_off_value(off_sample.get(meta_task))
 
@@ -52,6 +55,7 @@ class MetaSampleProcessor_off(SampleProcessor):
 
 
         # optimize value network
+
         if isinstance(off_sample, dict):
             self.baseline_value.optimize_baseline_value(samples_data_meta_batch, self.baseline_value_fit_style)
 
